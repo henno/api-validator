@@ -49,7 +49,6 @@ function lockEmoji(auth: boolean) {
 }
 
 export async function runQueuedTests() {
-  const debug = process.env.DEBUG === '1' || globalThis.DEBUG === true;
   for (const [url, auth, expStatus, body = null, save] of queuedTests) {
     const lock = lockEmoji(auth);
     const method = url.split(' ')[0];
@@ -60,14 +59,10 @@ export async function runQueuedTests() {
     const headers = auth && ctx.token ? { Authorization: `Bearer ${ctx.token}` } : {};
     const bodyStr = body && Object.keys(body).length > 0 ? ` ${JSON.stringify(body)}` : '';
     // Print test title
-    console.log(`▸ Testing ${method} ${endpoint}${bodyStr} ▸ ${expStatus}`);
+    console.log(`\x1b[37;44m▸ Testing ${method} ${endpoint}${bodyStr} ▸ ${expStatus}\x1b[0m`);
     // Indented request
-    if (debug) {
-      console.log(`     >>> [DEBUG] Request: ${method} ${endpoint}${bodyStr}`);
-    } else {
-      console.log(`     >>> ${url}${bodyStr}`);
-    }
-    const res = await req(path, { body, headers, debug });
+    console.log(`     >>> ${method} ${endpoint}${bodyStr}`);
+    const res = await req(path, { body, headers });
     // Indented response
     const responseStr = typeof res.body === 'object' ? JSON.stringify(res.body) : res.body;
     console.log(`     <<< ${res.status} ${responseStr}`);
@@ -123,7 +118,7 @@ export class SkipTest extends Error {
 
 export async function req(
     methodPath: string,
-    opts?: { body?: any, headers?: Record<string, string>, params?: Record<string, string>, debug?: boolean }
+    opts?: { body?: any, headers?: Record<string, string>, params?: Record<string, string> }
 ): Promise<ReqResponse> {
     /* parse “GET /foo” */
     const [method = "", path = ""] = methodPath.split(" ", 2);
@@ -132,7 +127,6 @@ export async function req(
     /* build url */
     // Support ESM: get BASE_URL from globalThis
     const baseUrl = typeof globalThis.BASE_URL !== 'undefined' ? globalThis.BASE_URL : (typeof BASE_URL !== 'undefined' ? BASE_URL : undefined);
-    const debug = opts?.debug || process.env.DEBUG === '1' || globalThis.DEBUG === true;
     if (typeof baseUrl === 'undefined') {
         throw new Error('BASE_URL is not defined. Please define `const BASE_URL = "...";` at the top of your test file.');
     }
@@ -151,26 +145,10 @@ export async function req(
         }
     }
 
-    if (debug) {
-        const grayBG = '\x1b[100m';
-        const reset = '\x1b[0m';
-        // Print full request URL
-        console.log(`${grayBG}[DEBUG] Full request URL: ${url.toString()}${reset}`);
-        // Print full request headers as a plain object
-        const headersObj: Record<string, string> = {};
-        h.forEach((v, k) => { headersObj[k] = v; });
-        console.log(`${grayBG}[DEBUG] Full request headers: ${JSON.stringify(headersObj, null, 2)}${reset}`);
-        console.log(`${grayBG}[DEBUG] Request body: ${payload}${reset}`);
-    }
-
-    /* tiny one‑liner log */
-    console.log(`>>> ${method.toUpperCase()} ${url.pathname}${url.search}`);
-
     try {
         const res = await fetch(url, { method, headers: h, body: payload, redirect: "follow" });
         const isJson = (res.headers.get("content-type") ?? "").includes("application/json");
         const resBody = isJson ? await res.json() : await res.text();
-        console.log(`<<< ${res.status} ${isJson ? inspect(resBody, false, 2, true) : resBody}`);
         return { status: res.status, body: resBody };
     } catch (e: any) {
         console.error(`⚠️  fetch error: ${e.message}`);
@@ -215,7 +193,11 @@ export function expect_status(res: { status: number }, expected: number) {
 }
 
 // --- Field Existence Assertion Helper ---
-export function expect_field(obj: any, field: string) {
+export function expect_field(obj: any, field: string | string[]) {
+    if (Array.isArray(field)) {
+        field.forEach(f => expect(obj && typeof obj === 'object' && f in obj, `Expected field '${f}' in object, got: ${JSON.stringify(obj)}`));
+        return true;
+    }
     return expect(obj && typeof obj === 'object' && field in obj, `Expected field '${field}' in object, got: ${JSON.stringify(obj)}`);
 }
 

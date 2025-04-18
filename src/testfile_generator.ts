@@ -5,6 +5,39 @@ import axios from "axios";
 import * as acorn from "acorn";
 import * as acornWalk from "acorn-walk";
 
+// --- Helper to resolve $ref in an object ---
+export function resolveRef(obj: any, ref: string): any {
+  if (!ref.startsWith('#/')) return undefined;
+  const path = ref.slice(2).split('/');
+  let cur = obj;
+  for (const p of path) {
+    if (cur && typeof cur === 'object') cur = cur[p];
+    else return undefined;
+  }
+  return cur;
+}
+
+// --- Helper to extract examples from a response object ---
+export function extractResponseExamples(respObj: any): any {
+  if (!respObj || typeof respObj !== 'object') return undefined;
+
+  // Check for direct examples
+  if (respObj.content?.['application/json']?.examples) {
+    const examples = respObj.content['application/json'].examples;
+    const firstKey = Object.keys(examples)[0];
+    if (firstKey && examples[firstKey]?.value) {
+      return examples[firstKey].value;
+    }
+  }
+
+  // Check for direct example
+  if (respObj.content?.['application/json']?.example) {
+    return respObj.content['application/json'].example;
+  }
+
+  return undefined;
+}
+
 export async function generateTestFile(options?: {
   studentName?: string;
   assignmentId?: string;
@@ -228,13 +261,37 @@ export async function generateTestFile(options?: {
     let post409Present = false;
     if (prioritizedItem && prioritizedItem.methods.post) {
       const detail = prioritizedItem.methods.post;
+      // Extract request-body example
+      let exampleBody: any;
+      const jsonContentPri = prioritizedItem.methods.post.requestBody?.content?.["application/json"];
+      if (jsonContentPri) {
+        if (jsonContentPri.examples) {
+          const exs = jsonContentPri.examples;
+          const k = Object.keys(exs)[0];
+          if (k && exs[k].value !== undefined) exampleBody = exs[k].value;
+        }
+        if (exampleBody === undefined && jsonContentPri.example !== undefined) {
+          exampleBody = jsonContentPri.example;
+        }
+        const schPri = jsonContentPri.schema;
+        if (exampleBody === undefined && schPri) {
+          const resSch = schPri.$ref ? resolveRef(swaggerDoc, schPri.$ref) : schPri;
+          if (resSch.example !== undefined) exampleBody = resSch.example;
+          else if (resSch.properties) {
+            exampleBody = {};
+            for (const [k2, v2] of Object.entries<any>(resSch.properties)) {
+              if (v2.example !== undefined) exampleBody[k2] = v2.example;
+            }
+          }
+        }
+      }
       const statusCodes = Object.keys(detail.responses || {});
       sortStatusCodes(statusCodes)
         .filter((code) => code !== "500")
         .forEach((code) => {
           if (code === "409") post409Present = true;
           test_lines.push(
-            `t("POST ${prioritizedRoute}", false, ${code}, ${JSON.stringify(detail.example || {})}${detail.callback ? ", res => { expect_field(res.body, 'message'); }" : ""});`
+            `t("POST ${prioritizedRoute}", false, ${code}, ${JSON.stringify(exampleBody ?? {})}${detail.callback ? ", res => { expect_field(res.body, 'message'); }" : ""});`
           );
         });
       if (!post409Present) {
@@ -247,12 +304,32 @@ export async function generateTestFile(options?: {
   const sessionsItem = pathList.find(item => item.route === "/sessions");
   if (sessionsItem && sessionsItem.methods.post) {
     const detail = sessionsItem.methods.post;
-    const statusCodes = Object.keys(detail.responses || {});
-    sortStatusCodes(statusCodes)
+    // Extract request-body example for sessions
+    let sessBody: any;
+    const jsonContentSes = detail.requestBody?.content?.["application/json"];
+    if (jsonContentSes) {
+      if (jsonContentSes.examples) {
+        const exs2 = jsonContentSes.examples;
+        const k2 = Object.keys(exs2)[0];
+        if (k2 && exs2[k2].value !== undefined) sessBody = exs2[k2].value;
+      }
+      if (sessBody === undefined && jsonContentSes.example !== undefined) sessBody = jsonContentSes.example;
+      const schSes = jsonContentSes.schema;
+      if (sessBody === undefined && schSes) {
+        const r2 = schSes.$ref ? resolveRef(swaggerDoc, schSes.$ref) : schSes;
+        if (r2.example !== undefined) sessBody = r2.example;
+        else if (r2.properties) {
+          sessBody = {};
+          for (const [kk, vv] of Object.entries<any>(r2.properties)) if (vv.example !== undefined) sessBody[kk] = vv.example;
+        }
+      }
+    }
+    const statusCodes2 = Object.keys(detail.responses || {});
+    sortStatusCodes(statusCodes2)
       .filter((code) => code !== "500")
       .forEach((code) => {
         test_lines.push(
-          `t("POST /sessions", false, ${code}, ${JSON.stringify(detail.example || {})}${detail.callback ? ", res => { expect_field(res.body, 'message'); }" : ""});`
+          `t("POST /sessions", false, ${code}, ${JSON.stringify(sessBody ?? {})}${detail.callback ? ", res => { expect_field(res.body, 'message'); }" : ""});`
         );
       });
   }
@@ -264,88 +341,113 @@ export async function generateTestFile(options?: {
       sortStatusCodes(statusCodes)
         .filter((code) => code !== "500")
         .forEach((code) => {
-        if (["get", "delete"].includes(method.toLowerCase())) {
-          test_lines.push(`t("${method.toUpperCase()} ${route}", false, ${code});`);
-        } else {
+          if (["get", "delete"].includes(method.toLowerCase())) {
+            test_lines.push(`t("${method.toUpperCase()} ${route}", false, ${code});`);
+            return;
+          }
           // Try to get example request body from swaggerDoc
-          let exampleBody: any = undefined;
-          if (detail.requestBody && detail.requestBody.content) {
-            const jsonContent = detail.requestBody.content["application/json"];
-            if (jsonContent && jsonContent.examples) {
-              // Use the first example value
-              const firstExampleKey = Object.keys(jsonContent.examples)[0];
-              if (firstExampleKey) {
-                const example = jsonContent.examples[firstExampleKey];
-                if (example && typeof example.value !== 'undefined') {
-                  exampleBody = example.value;
+          let exampleBody: any;
+          const jsonContent = detail.requestBody?.content?.["application/json"];
+          if (jsonContent) {
+            // Direct examples
+            if (jsonContent.examples) {
+              const examples = jsonContent.examples;
+              const firstKey = Object.keys(examples)[0];
+              if (firstKey) {
+                const ex = examples[firstKey];
+                if (ex?.value !== undefined) exampleBody = ex.value;
+              }
+            }
+            // Single example
+            if (exampleBody === undefined && jsonContent.example !== undefined) {
+              exampleBody = jsonContent.example;
+            }
+            // Schema-based examples
+            const sch = jsonContent.schema;
+            if (exampleBody === undefined && sch) {
+              const resolved = sch.$ref ? resolveRef(swaggerDoc, sch.$ref) : sch;
+              if (resolved.example !== undefined) {
+                exampleBody = resolved.example;
+              } else if (resolved.properties) {
+                exampleBody = {};
+                for (const [k, v] of Object.entries<any>(resolved.properties)) {
+                  if (v.example !== undefined) exampleBody[k] = v.example;
                 }
               }
             }
           }
-          // Check for response example for this status code
-          let responseExample = undefined;
-          let responseSchemaFieldsWithExamples: string[] = [];
-          // Handle $ref in responses
-          let respObj = detail.responses && detail.responses[code];
-          if (respObj && respObj["$ref"]) {
-            // Resolve $ref, e.g. "#/components/responses/UnauthorizedError"
-            const refPath = respObj["$ref"].replace(/^#\//, '').split('/');
-            let refObj: any = swaggerDoc;
-            for (const p of refPath) {
-              refObj = refObj && refObj[p];
-            }
-            if (refObj && refObj.content && refObj.content["application/json"]) {
-              const schema = refObj.content["application/json"].schema;
-              if (schema && schema.properties) {
-                for (const [k, v] of Object.entries(schema.properties)) {
-                  if (v && typeof v === 'object' && 'example' in v) {
-                    responseSchemaFieldsWithExamples.push(k);
-                  }
-                }
-              }
-            }
-          } else if (respObj && respObj.content && respObj.content["application/json"]) {
-            const respJson = respObj.content["application/json"];
-            if (respJson.example) {
-              responseExample = respJson.example;
-            } else if (respJson.examples) {
-              const firstRespExampleKey = Object.keys(respJson.examples)[0];
-              if (firstRespExampleKey) {
-                const respExampleObj = respJson.examples[firstRespExampleKey];
-                if (respExampleObj && typeof respExampleObj.value !== 'undefined') {
-                  responseExample = respExampleObj.value;
-                }
-              }
+          // Unified response handling
+          let respJson: any = detail.responses?.[code];
+          let originalRespJson = respJson; // Keep the original reference for later
+
+          // Resolve response reference if it exists
+          if (respJson?.['$ref']) {
+            respJson = resolveRef(swaggerDoc, respJson['$ref']) || respJson;
+          }
+
+          const contentJson = respJson?.content?.["application/json"];
+          const schema = contentJson?.schema;
+
+          // Extract fields with examples from schema properties
+          const fieldsWithExamples = schema?.properties
+            ? Object.entries<any>(schema.properties)
+                .filter(([_, v]) => typeof v === "object" && v.example !== undefined)
+                .map(([k]) => k)
+            : [];
+
+          // Try to get response example from various sources
+          let responseExample: any;
+
+          // 1. Try direct examples in the content
+          if (contentJson?.example) {
+            responseExample = contentJson.example;
+          } else if (contentJson?.examples) {
+            const key = Object.keys(contentJson.examples)[0];
+            const respEx = contentJson.examples[key];
+            if (respEx?.value !== undefined) responseExample = respEx.value;
+          }
+
+          // 2. If no example found and we have a schema reference, try to get examples from there
+          if (responseExample === undefined && schema?.['$ref']) {
+            const refSchema = resolveRef(swaggerDoc, schema['$ref']);
+            if (refSchema?.example) {
+              responseExample = refSchema.example;
             }
           }
-          if (responseSchemaFieldsWithExamples.length > 0) {
-            // Generate expect_field for each field with example in schema
-            test_lines.push(`t("${method.toUpperCase()} ${route}", false, ${code}, {}, res => { ${responseSchemaFieldsWithExamples.map(f => `expect_field(res.body, '${f}')`).join('; ')}; });`);
-          } else if (typeof exampleBody !== 'undefined' && responseExample && typeof responseExample === 'object') {
-            // Generate test with body and callback for response field assertion
-            const fieldNames = Object.keys(responseExample);
-            if (fieldNames.length > 0) {
-              const field = fieldNames[0];
-              test_lines.push(`t("${method.toUpperCase()} ${route}", false, ${code}, ${JSON.stringify(exampleBody)}, res => { expect_field(res.body, '${field}'); });`);
+
+          // 3. If still no example and we had a response reference, check if the referenced component has examples
+          if (responseExample === undefined && originalRespJson?.['$ref']) {
+            // Get the referenced response component
+            const refResp = resolveRef(swaggerDoc, originalRespJson['$ref']);
+            // Extract examples from it
+            if (refResp) {
+              const refExample = extractResponseExamples(refResp);
+              if (refExample) responseExample = refExample;
+            }
+          }
+
+          // Generate test lines
+          if (fieldsWithExamples.length) {
+            test_lines.push(`t("${method.toUpperCase()} ${route}", false, ${code}, {}, res => { expect_field(res.body, ${JSON.stringify(fieldsWithExamples)}); });`);
+          } else if (responseExample && typeof responseExample === "object") {
+            const fns = Object.keys(responseExample);
+            if (fns.length) {
+              test_lines.push(`t("${method.toUpperCase()} ${route}", false, ${code}, ${JSON.stringify(exampleBody ?? {})}, res => { expect_field(res.body, ${JSON.stringify(fns)}); });`);
             } else {
-              test_lines.push(`t("${method.toUpperCase()} ${route}", false, ${code}, ${JSON.stringify(exampleBody)});`);
+              test_lines.push(`t("${method.toUpperCase()} ${route}", false, ${code}, ${JSON.stringify(exampleBody ?? {})});`);
             }
-          } else if (responseExample && typeof responseExample === 'object') {
-            // No request example, but response example exists
-            const fieldNames = Object.keys(responseExample);
-            if (fieldNames.length > 0) {
-              const field = fieldNames[0];
-              test_lines.push(`t("${method.toUpperCase()} ${route}", false, ${code}, {}, res => { expect_field(res.body, '${field}'); });`);
+          } else if (exampleBody !== undefined) {
+            test_lines.push(`t("${method.toUpperCase()} ${route}", false, ${code}, ${JSON.stringify(exampleBody)});`);
+          } else {
+            // For error responses (4xx, 5xx), add validation for 'message' field
+            const codeNum = parseInt(code, 10);
+            if (codeNum >= 400 && codeNum < 600) {
+              test_lines.push(`t("${method.toUpperCase()} ${route}", false, ${code}, {}, res => { expect_field(res.body, 'message'); });`);
             } else {
               test_lines.push(`t("${method.toUpperCase()} ${route}", false, ${code}, {});`);
             }
-          } else if (typeof exampleBody !== 'undefined') {
-            test_lines.push(`t("${method.toUpperCase()} ${route}", false, ${code}, ${JSON.stringify(exampleBody)});`);
-          } else {
-            test_lines.push(`t("${method.toUpperCase()} ${route}", false, ${code}, {});`);
           }
-        }
-      });
+        });
     }
   }
   test_lines.push("");
