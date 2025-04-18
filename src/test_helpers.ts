@@ -1,6 +1,14 @@
 // test_helpers.ts
 import { inspect } from "util";
 
+/**
+ * Returns a random integer between min and max (inclusive).
+ */
+export function randomInt(min: number, max: number) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+
 /* ------------------------------------------------------------------ *\
  * Globals
 \* ------------------------------------------------------------------ */
@@ -37,29 +45,45 @@ export function t(
 }
 
 function lockEmoji(auth: boolean) {
-  return auth ? "🔒" : "🔓";
+  return auth ? "🔒" : " ";
 }
 
 export async function runQueuedTests() {
+  const debug = process.env.DEBUG === '1' || globalThis.DEBUG === true;
   for (const [url, auth, expStatus, body = null, save] of queuedTests) {
     const lock = lockEmoji(auth);
-    const title = `${lock} ${url} → ${expStatus}`;
+    const method = url.split(' ')[0];
+    const endpoint = url.split(' ').slice(1).join(' ');
     // interpolate $placeholders from ctx
     const path = url.replace(/\$([a-z]\w*)/gi, (_, k) => ctx[k]);
     // Auth header
     const headers = auth && ctx.token ? { Authorization: `Bearer ${ctx.token}` } : {};
-    const res = await req(path, { body, headers });
-    if (res.status === expStatus) {
-      console.log(`PASS  ▸ ${title}`);
-      if (save) await save(res, ctx);
-      continue;
+    const bodyStr = body && Object.keys(body).length > 0 ? ` ${JSON.stringify(body)}` : '';
+    // Print test title
+    console.log(`▸ Testing ${method} ${endpoint}${bodyStr} ▸ ${expStatus}`);
+    // Indented request
+    if (debug) {
+      console.log(`     >>> [DEBUG] Request: ${method} ${endpoint}${bodyStr}`);
+    } else {
+      console.log(`     >>> ${url}${bodyStr}`);
     }
-    const bodyDesc = body != null ? ` | body: ${JSON.stringify(body)}` : "";
-    console.error(
-      `FAIL  ▸ ${lock} ${url} expected ${expStatus}, got ${res.status}${bodyDesc}`
-    );
-    process.exit?.(1);
-    throw new Error(`Test failed: ${title}`); // fallback for environments w/o process
+    const res = await req(path, { body, headers, debug });
+    // Indented response
+    const responseStr = typeof res.body === 'object' ? JSON.stringify(res.body) : res.body;
+    console.log(`     <<< ${res.status} ${responseStr}`);
+    if (res.status === expStatus) {
+      // Output PASS with green background and black text, indented
+      console.log(`     \x1b[30;42mPASS  ▸ ${lock} ${url} → ${expStatus}\x1b[0m`);
+      if (save) await save(res, ctx);
+    } else {
+      const bodyDesc = body != null ? ` | body: ${JSON.stringify(body)}` : "";
+      // Output FAIL with red background and black text, indented
+      console.error(`     \x1b[30;41mFAIL  ▸ ${lock} ${url} expected ${expStatus}, got ${res.status}${bodyDesc}\x1b[0m`);
+      process.exit?.(1);
+      throw new Error(`Test failed: ${lock} ${url} → ${expStatus}`); // fallback for environments w/o process
+    }
+    // Empty line after each test
+    console.log("");
   }
   process.exit?.(0);
 }
@@ -99,9 +123,7 @@ export class SkipTest extends Error {
 
 export async function req(
     methodPath: string,
-    body?: any,
-    headers?: Record<string, string>,
-    params?: Record<string, string>,
+    opts?: { body?: any, headers?: Record<string, string>, params?: Record<string, string>, debug?: boolean }
 ): Promise<ReqResponse> {
     /* parse “GET /foo” */
     const [method = "", path = ""] = methodPath.split(" ", 2);
@@ -110,24 +132,35 @@ export async function req(
     /* build url */
     // Support ESM: get BASE_URL from globalThis
     const baseUrl = typeof globalThis.BASE_URL !== 'undefined' ? globalThis.BASE_URL : (typeof BASE_URL !== 'undefined' ? BASE_URL : undefined);
+    const debug = opts?.debug || process.env.DEBUG === '1' || globalThis.DEBUG === true;
     if (typeof baseUrl === 'undefined') {
         throw new Error('BASE_URL is not defined. Please define `const BASE_URL = "...";` at the top of your test file.');
     }
     const url = new URL(path, baseUrl);
-    if (params) Object.entries(params).forEach(([k, v]) => url.searchParams.append(k, v));
-
+    if (opts?.params) Object.entries(opts.params).forEach(([k, v]) => url.searchParams.append(k, v));
 
     /* headers & body */
-    const h = new Headers(headers);
+    const h = new Headers(opts?.headers);
     let payload: RequestInit["body"] | null = null;
-    if (body != null) {
-        if (body instanceof FormData) payload = body;
-        else if (typeof body === "object" && !h.has("Content-Type")) {
-            h.set("Content-Type", "application/json");
-            payload = JSON.stringify(body);
-        } else {
-            payload = String(body);
+    const body = opts?.body;
+    if (body && (typeof body === "object" || typeof body === "string")) {
+        payload = typeof body === "string" ? body : JSON.stringify(body);
+        // Always set Content-Type: application/json if not already present
+        if (!h.has("content-type")) {
+            h.set("content-type", "application/json");
         }
+    }
+
+    if (debug) {
+        const grayBG = '\x1b[100m';
+        const reset = '\x1b[0m';
+        // Print full request URL
+        console.log(`${grayBG}[DEBUG] Full request URL: ${url.toString()}${reset}`);
+        // Print full request headers as a plain object
+        const headersObj: Record<string, string> = {};
+        h.forEach((v, k) => { headersObj[k] = v; });
+        console.log(`${grayBG}[DEBUG] Full request headers: ${JSON.stringify(headersObj, null, 2)}${reset}`);
+        console.log(`${grayBG}[DEBUG] Request body: ${payload}${reset}`);
     }
 
     /* tiny one‑liner log */

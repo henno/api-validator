@@ -2,7 +2,7 @@ import prompts from "prompts";
 import { readdirSync } from "fs";
 import { generateTestFile } from "./testfile_generator";
 
-async function mainMenu() {
+async function mainMenu(debug = false) {
   while (true) {
     const response = await prompts({
       type: "select",
@@ -16,7 +16,7 @@ async function mainMenu() {
     });
     if (!response.action || response.action === "exit") break;
     if (response.action === "run-student") {
-      await runStudentTestFile();
+      await runStudentTestFile(debug);
     } else if (response.action === "generate") {
       await generateTestFile({ interactive: true });
     }
@@ -25,7 +25,7 @@ async function mainMenu() {
 
 // No longer needed: runScript
 
-async function runStudentTestFile() {
+async function runStudentTestFile(debug = false) {
   const testDir = "tests";
   let files: string[] = [];
   try {
@@ -56,25 +56,28 @@ async function runStudentTestFile() {
     })
   });
   if (file) {
-    await runScript(file);
+    await runScript(file, false, debug);
   }
 }
 
-async function runScript(script: string, passthroughArgs = false) {
+async function runScript(script: string, passthroughArgs = false, debug = false) {
   const args = ["run", script];
   if (passthroughArgs) {
     args.push(...process.argv.slice(2));
   }
   const { spawn } = await import("child_process");
-  const proc = spawn("bun", args, { stdio: "inherit" });
+  const env = { ...process.env };
+  if (debug) env.DEBUG = "1";
+  const proc = spawn("bun", args, { stdio: "inherit", env });
   await new Promise(resolve => proc.on("exit", resolve));
 }
 
 // Check for --run-test <file> argument
+const debug = process.argv.includes("--debug");
 const runTestArgIndex = process.argv.indexOf("--run-test");
 if (runTestArgIndex !== -1 && process.argv[runTestArgIndex + 1]) {
   const testFile = process.argv[runTestArgIndex + 1];
-  runScript(testFile).then(() => process.exit(0));
+  runScript(testFile, false, debug).then(() => process.exit(0));
 } else {
-  mainMenu();
+  mainMenu(debug);
 }
