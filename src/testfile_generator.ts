@@ -285,13 +285,16 @@ export async function generateTestFile(options?: {
           }
         }
       }
-      const statusCodes = Object.keys(detail.responses || {});
-      sortStatusCodes(statusCodes)
+      sortStatusCodes(Object.keys(detail.responses || {}))
         .filter((code) => code !== "500")
         .forEach((code) => {
           if (code === "409") post409Present = true;
+          // choose body: dynamic for /users, else from example
+          const bodyArg = prioritizedRoute === "/users"
+            ? `{username: username, password: password}`
+            : JSON.stringify(exampleBody ?? {});
           test_lines.push(
-            `t("POST ${prioritizedRoute}", false, ${code}, ${JSON.stringify(exampleBody ?? {})}${detail.callback ? ", res => { expect_field(res.body, 'message'); }" : ""});`
+            `t("POST ${prioritizedRoute}", false, ${code}, ${bodyArg}${detail.callback ? ", res => { expect_field(res.body, 'message'); }" : ""});`
           );
         });
       if (!post409Present) {
@@ -317,19 +320,19 @@ export async function generateTestFile(options?: {
       const schSes = jsonContentSes.schema;
       if (sessBody === undefined && schSes) {
         const r2 = schSes.$ref ? resolveRef(swaggerDoc, schSes.$ref) : schSes;
-        if (r2.example !== undefined) sessBody = r2.example;
-        else if (r2.properties) {
+        if (r2.properties) {
           sessBody = {};
           for (const [kk, vv] of Object.entries<any>(r2.properties)) if (vv.example !== undefined) sessBody[kk] = vv.example;
         }
       }
     }
-    const statusCodes2 = Object.keys(detail.responses || {});
-    sortStatusCodes(statusCodes2)
+    sortStatusCodes(Object.keys(detail.responses || {}))
       .filter((code) => code !== "500")
       .forEach((code) => {
+        // use dynamic credentials
+        const sesBody = `{username: username, password: password}`;
         test_lines.push(
-          `t("POST /sessions", false, ${code}, ${JSON.stringify(sessBody ?? {})}${detail.callback ? ", res => { expect_field(res.body, 'message'); }" : ""});`
+          `t("POST /sessions", false, ${code}, ${sesBody}${detail.callback ? ", res => { expect_field(res.body, 'message'); }" : ""});`
         );
       });
   }
